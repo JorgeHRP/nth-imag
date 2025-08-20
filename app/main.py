@@ -1,5 +1,6 @@
 import base64
 import io
+import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont
@@ -12,12 +13,17 @@ class RequestData(BaseModel):
     logo_base64: str
     texto: str
 
+# === Helper para limpar base64 (aceita data:image/...;base64, ou só o conteúdo) ===
+def limpar_base64(data_uri: str) -> str:
+    if "," in data_uri:
+        return data_uri.split(",")[1]
+    return data_uri
+
 # === Função principal ===
 def gerar_imagem_final(
     imagem: Image.Image,
     overlay: Image.Image,
     texto: str,
-    fonte_path="arialbd.ttf",
     tamanho_fonte=60,
     cor_texto=(255, 255, 255),
     margem_porcento=0.10
@@ -61,12 +67,14 @@ def gerar_imagem_final(
     largura_desejada = imagem.width // 3
     proporcao = largura_desejada / overlay.width
     altura_desejada = int(overlay.height * proporcao)
-    overlay_resized = overlay.resize((largura_desejada, altura_desejada), resample=Image.Resampling.LANCZOS).convert("RGBA")
+    overlay_resized = overlay.resize(
+        (largura_desejada, altura_desejada),
+        resample=Image.Resampling.LANCZOS
+    ).convert("RGBA")
 
     x = (imagem.width - overlay_resized.width) // 2
     y = int(imagem.height * 2 / 3) - (overlay_resized.height // 2)
 
-    # usar paste para evitar erro de tamanhos diferentes
     imagem.paste(overlay_resized, (x, y), overlay_resized)
 
     # --- 4. Adicionar texto ---
@@ -94,9 +102,17 @@ def gerar_imagem_final(
             linhas.append(linha_atual)
         return linhas
 
+    # Caminho da fonte dentro de app/fonts
+    fonte_path = os.path.join(os.path.dirname(__file__), "fonts", "arialbd.ttf")
+
     fonte_tentativa = tamanho_fonte
     while fonte_tentativa >= 10:
-        fonte = ImageFont.truetype(fonte_path, fonte_tentativa)
+        try:
+            fonte = ImageFont.truetype(fonte_path, fonte_tentativa)
+        except OSError:
+            fonte = ImageFont.load_default()
+            break
+
         linhas = quebrar_texto(draw, texto, fonte, largura_util)
         altura_linha = fonte.getbbox("Ag")[3]
         altura_total = altura_linha * len(linhas)
@@ -104,7 +120,6 @@ def gerar_imagem_final(
             break
         fonte_tentativa -= 1
 
-    fonte = ImageFont.truetype(fonte_path, fonte_tentativa)
     linhas = quebrar_texto(draw, texto, fonte, largura_util)
     altura_linha = fonte.getbbox("Ag")[3]
     y = y_topo + (altura_util - altura_linha * len(linhas)) // 2
@@ -124,12 +139,6 @@ def gerar_imagem_final(
     buffer = io.BytesIO()
     imagem.convert("RGB").save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-# === Helper para limpar base64 (aceita data:image/...;base64, ou só o conteúdo) ===
-def limpar_base64(data_uri: str) -> str:
-    if "," in data_uri:
-        return data_uri.split(",")[1]
-    return data_uri
 
 # === Endpoint ===
 @app.post("/gerar_imagem")
